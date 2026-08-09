@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Session context (local only, never push)
+CONTEXT.md
+
 # Python
 __pycache__/
 *.py[cod]
