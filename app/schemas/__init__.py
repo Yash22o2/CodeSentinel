@@ -150,15 +150,12 @@ class PRReviewJob(BaseModel):
 class AgentPlan(BaseModel):
     """Planner node output — which agents to invoke and why."""
 
-    invoke_security: bool = True
-    invoke_style: bool = True
-    invoke_test_coverage: bool = True
-    invoke_logic: bool = True
-    skip_reasons: dict[str, str] = Field(
-        default_factory=dict,
-        description="Map of agent_name -> reason it was skipped",
+    agents_to_run: list[str] = Field(
+        default_factory=lambda: ["logic"],
+        description="List of agent names to invoke: security, style, logic, test",
     )
-    reasoning: str = ""
+    rationale: str = Field(default="", description="Human-readable explanation of routing decisions")
+    diff_summary: str = Field(default="", description="Brief summary of what changed")
 
 
 class AgentResult(BaseModel):

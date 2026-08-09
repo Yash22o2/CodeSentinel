@@ -36,32 +36,6 @@ GitHub Webhook → FastAPI → Redis Queue → LangGraph StateGraph
 | Reliability | tenacity retries, circuit breakers |
 | Deploy | Docker + Railway/Render |
 
-## Quick Start
-
-```bash
-# 1. Copy and fill in your secrets
-cp .env.example .env
-
-# 2. Install dependencies
-pip install -e ".[dev]"
-
-# 3. Start services (Redis + Postgres)
-docker-compose up redis postgres -d
-
-# 4. Run the API server
-uvicorn app.main:app --reload --port 8000
-
-# 5. Expose locally for GitHub webhooks
-ngrok http 8000
-```
-
-## Setup
-
-See the [GitHub Integration Setup Guide](docs/github_setup.md) for full instructions on:
-- Creating a GitHub PAT with correct permissions
-- Generating a webhook secret
-- Registering the webhook in your repo
-- End-to-end smoke testing
 
 ## Project Structure
 
