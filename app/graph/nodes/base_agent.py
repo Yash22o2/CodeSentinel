@@ -181,14 +181,39 @@ class BaseAgent(ABC):
                 except ValueError:
                     severity = Severity.MEDIUM
 
+                category_str = item.get("category", "logic").lower()
+                try:
+                    from app.schemas import FindingCategory
+                    category = FindingCategory(category_str)
+                except (ValueError, ImportError):
+                    from app.schemas import FindingCategory
+                    category = FindingCategory.LOGIC
+
+                # Support both old-style LLM outputs (filename/title) and
+                # new-style (file/message) for forward-compat during migration
+                file_path = (
+                    item.get("file") or item.get("filename") or "unknown"
+                )
+                line_num = item.get("line") or item.get("line_number") or 1
+                if line_num is None:
+                    line_num = 1
+
+                message_text = (
+                    item.get("message")
+                    or item.get("description")
+                    or item.get("title")
+                    or "No description provided by agent"
+                )
+
                 finding = Finding(
-                    filename=item.get("filename", "unknown"),
-                    line_number=item.get("line_number"),
+                    file=file_path,
+                    line=int(line_num),
                     severity=severity,
-                    title=item.get("title", "Unnamed finding"),
-                    description=item.get("description", ""),
-                    suggestion=item.get("suggestion", ""),
-                    agent=self.agent_name,
+                    category=category,
+                    message=message_text,
+                    suggested_fix=item.get("suggestion") or item.get("suggested_fix"),
+                    rule_id=item.get("rule_id"),
+                    tool=item.get("tool") or self.agent_name,
                     confidence=float(item.get("confidence", 0.7)),
                 )
                 findings.append(finding)

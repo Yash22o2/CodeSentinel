@@ -44,14 +44,14 @@ DROP_THRESHOLD = 0.35
 
 
 def _deduplicate(findings: list[Finding]) -> list[Finding]:
-    """Remove near-duplicate findings (same file + line + similar title)."""
+    """Remove near-duplicate findings (same file + line + similar message prefix)."""
     seen: set[tuple] = set()
     unique: list[Finding] = []
     for f in findings:
         key = (
-            f.filename,
-            f.line_number,
-            f.title[:40].lower().strip(),
+            f.file,
+            f.line,
+            f.message[:40].lower().strip(),
         )
         if key not in seen:
             seen.add(key)
@@ -94,12 +94,11 @@ def _llm_filter(findings: list[Finding]) -> list[Finding]:
         [
             {
                 "id": i,
-                "filename": f.filename,
-                "line_number": f.line_number,
+                "file": f.file,
+                "line": f.line,
                 "severity": f.severity.value,
-                "title": f.title,
-                "description": f.description,
-                "agent": f.agent,
+                "message": f.message,
+                "tool": f.tool,
                 "confidence": f.confidence,
             }
             for i, f in enumerate(findings)

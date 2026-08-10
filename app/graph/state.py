@@ -16,6 +16,11 @@ from app.github.diff_parser import DiffChunk
 from app.schemas import AgentPlan, Finding, ReviewMetadata
 
 
+def _merge_dicts(a: dict, b: dict) -> dict:
+    """Reducer for node_timings: merges two timing dicts (last writer wins per key)."""
+    return {**a, **b}
+
+
 class GraphState(TypedDict):
     """
     Shared state for the CodeSentinel review graph.
@@ -51,4 +56,4 @@ class GraphState(TypedDict):
 
     # ── Execution metadata ────────────────────────────────────────────────────
     errors: Annotated[list[str], operator.add]   # non-fatal errors from any node
-    node_timings: dict[str, float]               # node_name -> elapsed_ms
+    node_timings: Annotated[dict[str, float], _merge_dicts]  # node_name -> elapsed_ms
