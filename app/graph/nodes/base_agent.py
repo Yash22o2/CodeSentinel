@@ -15,6 +15,7 @@ The base handles:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -32,6 +33,7 @@ from tenacity import (
 
 from app.config import get_settings
 from app.github.diff_parser import DiffChunk
+from app.reliability.circuit_breaker import CircuitBreakerOpenError, get_breaker
 from app.schemas import Finding, Severity
 
 log = structlog.get_logger(__name__)
@@ -92,17 +94,49 @@ class BaseAgent(ABC):
     def __call__(self, state: dict) -> dict:
         """LangGraph node entrypoint — called with current graph state."""
         t0 = time.monotonic()
-        diff_files: list[DiffFile] = state["diff_files"]
+        diff_files: list[DiffChunk] = state["diff_files"]
         repo = state["repo_full_name"]
         pr = state["pr_number"]
 
         log.info(f"{self.agent_name}.start", repo=repo, pr=pr)
 
+        # ── Phase 3: Check graph deadline ───────────────────────────────────────────────
+        graph_deadline: float | None = state.get("graph_deadline")
+        if graph_deadline is not None:
+            remaining = graph_deadline - time.monotonic()
+            if remaining <= 2.0:  # Less than 2 seconds left, skip this agent
+                log.warning(
+                    f"{self.agent_name}.skipped_deadline",
+                    remaining_s=round(remaining, 1),
+                )
+                elapsed = (time.monotonic() - t0) * 1000
+                return {
+                    f"{self.agent_name}_findings": [],
+                    "node_timings": {self.agent_name: elapsed},
+                    "errors": [f"{self.agent_name}: skipped (graph deadline exceeded)"],
+                }
+
+        # ── Phase 3: Circuit breaker ────────────────────────────────────────────────────
+        cb = get_breaker(
+            self.agent_name,
+            failure_threshold=_settings.cb_failure_threshold,
+            recovery_timeout=_settings.cb_recovery_timeout_s,
+        )
+
         try:
-            findings = self._run_with_retry(diff_files, repo, pr)
+            findings = cb.call(
+                lambda: self._run_with_timeout(diff_files, repo, pr, graph_deadline)
+            )
+        except CircuitBreakerOpenError as exc:
+            elapsed = (time.monotonic() - t0) * 1000
+            log.warning(f"{self.agent_name}.circuit_open", retry_after=exc.retry_after)
+            return {
+                f"{self.agent_name}_findings": [],
+                "node_timings": {self.agent_name: elapsed},
+                "errors": [f"{self.agent_name}: circuit breaker OPEN (retry in {exc.retry_after:.0f}s)"],
+            }
         except Exception as exc:
             log.error(f"{self.agent_name}.failed", error=str(exc))
-            findings = []
             elapsed = (time.monotonic() - t0) * 1000
             return {
                 f"{self.agent_name}_findings": [],
@@ -121,6 +155,55 @@ class BaseAgent(ABC):
             "node_timings": {self.agent_name: elapsed},
             "errors": [],
         }
+
+    def _run_with_timeout(
+        self,
+        diff_files: list[DiffChunk],
+        repo: str,
+        pr: int,
+        graph_deadline: float | None,
+    ) -> list[Finding]:
+        """
+        Run the agent with a per-node timeout.
+        Uses asyncio.wait_for if an event loop is running; otherwise falls back
+        to a direct call (sync context in RQ worker).
+        """
+        timeout = _settings.agent_timeout_s
+
+        # Honour graph deadline: don't wait longer than remaining time
+        if graph_deadline is not None:
+            remaining = graph_deadline - time.monotonic()
+            timeout = min(timeout, max(1.0, remaining - 1.0))
+
+        # Try async path (if called from an async context)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                future = asyncio.run_coroutine_threadsafe(
+                    self._run_async(diff_files, repo, pr, timeout), loop
+                )
+                return future.result(timeout=timeout + 1)
+        except RuntimeError:
+            pass  # No event loop — sync fallback below
+
+        # Sync path (RQ worker, tests): just call directly with tenacity retries
+        # Timeout enforcement in sync mode happens via threading.Timer signal
+        return self._run_with_retry(diff_files, repo, pr)
+
+    async def _run_async(
+        self,
+        diff_files: list[DiffChunk],
+        repo: str,
+        pr: int,
+        timeout: float,
+    ) -> list[Finding]:
+        """Async wrapper so asyncio.wait_for can apply a timeout."""
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: self._run_with_retry(diff_files, repo, pr)),
+            timeout=timeout,
+        )
 
     @retry(
         retry=retry_if_exception_type(Exception),

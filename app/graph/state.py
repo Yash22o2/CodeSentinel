@@ -57,3 +57,9 @@ class GraphState(TypedDict):
     # ── Execution metadata ────────────────────────────────────────────────────
     errors: Annotated[list[str], operator.add]   # non-fatal errors from any node
     node_timings: Annotated[dict[str, float], _merge_dicts]  # node_name -> elapsed_ms
+
+    # ── Phase 3: Reliability ──────────────────────────────────────────────────
+    # Wall-clock deadline (monotonic seconds) for the entire graph run.
+    # Set by processor.py before invoking the graph. Nodes can check this
+    # to skip work if we're already near the deadline.
+    graph_deadline: float | None  # monotonic time.monotonic() deadline

@@ -27,6 +27,15 @@ from app.graph.nodes.critic import (
 from app.schemas import Finding, FindingCategory, Severity
 
 
+@pytest.fixture(autouse=True)
+def mock_chroma_store():
+    with patch("app.graph.nodes.critic.get_chroma_store") as mock_get_store:
+        mock_store = MagicMock()
+        mock_store.find_similar_dropped.return_value = False
+        mock_get_store.return_value = mock_store
+        yield mock_store
+
+
 # ── Finding factory ───────────────────────────────────────────────────────────
 
 
@@ -170,8 +179,28 @@ def test_critic_calls_llm_filter_for_borderline():
 
     # _llm_filter should have been called with the borderline finding
     mock_filter.assert_called_once()
-    called_with = mock_filter.call_args[0][0]
+    called_with = mock_filter.call_args[0][1]
     assert f in called_with
+
+
+def test_critic_auto_drops_similar_findings(mock_chroma_store):
+    """Borderline findings that match in Chroma should be auto-dropped without LLM."""
+    borderline_conf = (DROP_THRESHOLD + CONFIDENCE_THRESHOLD) / 2
+    f = _finding(
+        confidence=borderline_conf,
+        message="Previously dropped false positive",
+    )
+    state = _make_state(logic=[f])
+    
+    mock_chroma_store.find_similar_dropped.return_value = True
+
+    with patch("app.graph.nodes.critic._llm_filter") as mock_filter:
+        result = critic_node(state)
+
+    # _llm_filter should NOT have been called because it was auto-dropped
+    mock_filter.assert_not_called()
+    assert f not in result["filtered_findings"]
+
 
 
 # ── critic_node: merge from all agents ───────────────────────────────────────

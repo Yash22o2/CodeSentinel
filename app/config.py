@@ -45,6 +45,25 @@ class Settings(BaseSettings):
     critic_confidence_threshold: float = 0.6
     max_findings_per_review: int = 50
 
+    # ── Phase 3: Timeout Budgets (seconds) ───────────────────────────────────
+    # Per-agent timeout: each specialist agent gets this long to call Groq
+    agent_timeout_s: float = 45.0
+    # Critic node timeout: second LLM pass to filter false positives
+    critic_timeout_s: float = 30.0
+    # Total graph timeout: hard cap on the entire multi-agent review pipeline
+    graph_timeout_s: float = 120.0
+
+    # ── Phase 4: Chroma Vector Store (Memory) ────────────────────────────────
+    chroma_persist_dir: str = "./.chroma_data"
+    chroma_similarity_threshold: float = 0.95
+    chroma_embedding_model: str = "all-MiniLM-L6-v2"
+
+    # ── Phase 3: Circuit Breaker ──────────────────────────────────────────────
+    # How many consecutive failures before a node's circuit opens
+    cb_failure_threshold: int = 5
+    # Seconds the circuit stays OPEN before probing again (half-open)
+    cb_recovery_timeout_s: float = 60.0
+
     # ── LangSmith (optional) ──────────────────────────────────────────────────
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""

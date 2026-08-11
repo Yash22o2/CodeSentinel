@@ -25,6 +25,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from app.config import get_settings
 from app.graph.state import GraphState
+from app.memory.chroma_store import get_chroma_store
 from app.schemas import Finding, Severity
 
 log = structlog.get_logger(__name__)
@@ -85,7 +86,7 @@ Output ONLY the raw JSON array, no markdown."""
     wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
 )
-def _llm_filter(findings: list[Finding]) -> list[Finding]:
+def _llm_filter(repo: str, findings: list[Finding]) -> list[Finding]:
     """Use a second LLM call to validate borderline findings."""
     if not findings:
         return []
@@ -127,6 +128,14 @@ def _llm_filter(findings: list[Finding]) -> list[Finding]:
     if not keep_ids and len(decisions) == 0:
         return findings
 
+    # Save decisions to Chroma (Phase 4)
+    try:
+        store = get_chroma_store()
+        decisions_strings = ["keep" if i in keep_ids else "drop" for i in range(len(findings))]
+        store.add_evaluations(repo, findings, decisions_strings)
+    except Exception as e:
+        log.error("critic.chroma_save_failed", error=str(e))
+
     return [f for i, f in enumerate(findings) if i in keep_ids]
 
 
@@ -159,11 +168,64 @@ def critic_node(state: GraphState) -> dict:
 
     # ── 4. Split: high-confidence pass-through vs borderline LLM review ──────
     high_confidence = [f for f in deduped if f.confidence >= CONFIDENCE_THRESHOLD]
-    borderline      = [f for f in deduped if f.confidence < CONFIDENCE_THRESHOLD]
+    borderline_initial = [f for f in deduped if f.confidence < CONFIDENCE_THRESHOLD]
 
-    # ── 5. LLM filter on borderline findings ─────────────────────────────────
+    # ── 4.5. Phase 4: Chroma pre-filter for borderline ───────────────────────
     try:
-        validated_borderline = _llm_filter(borderline) if borderline else []
+        store = get_chroma_store()
+        borderline = []
+        auto_dropped = 0
+        for f in borderline_initial:
+            if store.find_similar_dropped(repo, f):
+                auto_dropped += 1
+            else:
+                borderline.append(f)
+        
+        if auto_dropped:
+            log.info("critic.auto_dropped", count=auto_dropped)
+    except Exception as e:
+        log.error("critic.chroma_prefilter_failed", error=str(e))
+        borderline = borderline_initial
+
+    # ── 5. LLM filter on borderline findings ────────────────────────────────────
+    # Phase 3: wrap in deadline-aware timeout
+    critic_timeout = _settings.critic_timeout_s
+    graph_deadline: float | None = state.get("graph_deadline")
+    if graph_deadline is not None:
+        remaining = graph_deadline - time.monotonic()
+        critic_timeout = min(critic_timeout, max(1.0, remaining - 1.0))
+
+    try:
+        if borderline:
+            import concurrent.futures
+            import threading
+
+            result_holder: list = []
+            exc_holder: list = []
+
+            def _run():
+                try:
+                    result_holder.append(_llm_filter(repo, borderline))
+                except Exception as e:
+                    exc_holder.append(e)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=critic_timeout)
+
+            if t.is_alive():
+                log.warning(
+                    "critic.llm_filter_timeout",
+                    timeout_s=critic_timeout,
+                    borderline_count=len(borderline),
+                )
+                validated_borderline = borderline  # fail-open on timeout
+            elif exc_holder:
+                raise exc_holder[0]
+            else:
+                validated_borderline = result_holder[0] if result_holder else borderline
+        else:
+            validated_borderline = []
     except Exception as exc:
         log.error("critic.llm_filter_failed", error=str(exc))
         validated_borderline = borderline  # fail-open: keep if critic fails

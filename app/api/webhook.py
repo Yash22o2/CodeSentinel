@@ -4,11 +4,13 @@ GitHub Webhook Endpoint
 POST /webhook/github
 
 Receives GitHub PR webhook events, validates the HMAC signature,
-enqueues a review job to Redis, and immediately returns 202.
+enqueues a review job to Redis/RQ, and immediately returns 202.
 
 Critical design decision: return 202 within < 10 seconds.
 GitHub will retry if it doesn't get a 2xx. The actual review
-happens in the background worker.
+happens in the RQ background worker.
+
+Phase 3: Migrated from FastAPI BackgroundTask → RQ + Redis queue.
 """
 from __future__ import annotations
 
@@ -21,12 +23,36 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 
 from app.config import Settings, get_settings
 from app.github.webhook_validator import verify_webhook_signature
+from app.reliability.job_store import job_store
 from app.schemas import GitHubWebhookPayload, PRReviewJob
-from app.worker.processor import enqueue_review_job
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["webhook"])
+
+
+def _get_rq_queue(settings: Settings):
+    """
+    Build the RQ queue connected to Redis.
+
+    Falls back gracefully to None if Redis is unavailable —
+    in that case the webhook still enqueues via FastAPI BackgroundTask
+    so development without Redis still works.
+    """
+    try:
+        import redis
+        from rq import Queue
+
+        conn = redis.from_url(settings.redis_url, socket_connect_timeout=1)
+        conn.ping()  # Fast check — raises if Redis is down
+        return Queue("codesentinel", connection=conn)
+    except Exception as exc:
+        logger.warning(
+            "Redis unavailable — falling back to BackgroundTask",
+            error=str(exc),
+            redis_url=settings.redis_url,
+        )
+        return None
 
 
 async def _get_raw_body(request: Request) -> bytes:
@@ -97,7 +123,7 @@ async def github_webhook(
             "reason": f"action '{payload.action}' does not require review",
         }
 
-    # ── 6. Build job and enqueue ──────────────────────────────────────────────
+    # ── 6. Build job ──────────────────────────────────────────────────────────
     job = PRReviewJob(
         request_id=request_id,
         repo_full_name=payload.repository.full_name,
@@ -106,17 +132,39 @@ async def github_webhook(
         base_sha=payload.pull_request.base["sha"],
         pr_title=payload.pull_request.title,
         pr_url=payload.pull_request.html_url,
+        pr_author=payload.pull_request.user.login,
         diff="",           # Worker fetches this — keeps webhook response fast
         changed_files=[],  # Worker fetches this too
     )
 
-    background_tasks.add_task(enqueue_review_job, job)
+    # ── 7. Enqueue: try RQ (Redis), fall back to BackgroundTask ──────────────
+    rq_queue = _get_rq_queue(settings)
 
-    log.info("Review job enqueued", job_id=request_id)
+    if rq_queue is not None:
+        # Phase 3: proper Redis-backed queue
+        from app.worker.rq_worker import process_pr_review
+        rq_queue.enqueue(
+            process_pr_review,
+            job.model_dump(mode="json"),
+            job_timeout=int(settings.graph_timeout_s) + 60,  # RQ-level hard kill
+            result_ttl=3600,   # Keep result in Redis for 1 hour
+            failure_ttl=86400, # Keep failed jobs for 24 hours
+        )
+        job_store.set_pending(request_id, meta={"repo": job.repo_full_name, "pr": job.pr_number})
+        enqueue_method = "rq"
+        log.info("Review job enqueued to Redis/RQ", job_id=request_id)
+    else:
+        # Fallback: FastAPI BackgroundTask (no Redis required for dev)
+        from app.worker.processor import enqueue_review_job
+        background_tasks.add_task(enqueue_review_job, job)
+        job_store.set_pending(request_id, meta={"repo": job.repo_full_name, "pr": job.pr_number})
+        enqueue_method = "background_task"
+        log.info("Review job enqueued via BackgroundTask (Redis unavailable)", job_id=request_id)
 
     return {
         "status": "accepted",
         "request_id": request_id,
         "repo": payload.repository.full_name,
         "pr": payload.number,
+        "queue": enqueue_method,
     }

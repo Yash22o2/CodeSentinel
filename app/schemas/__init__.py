@@ -61,6 +61,9 @@ class Finding(BaseModel):
     rule_id: Optional[str] = Field(
         None, description="Static analysis rule ID (e.g. 'B307', 'E501')"
     )
+    code_snippet: Optional[str] = Field(
+        None, description="The specific lines of code related to this finding"
+    )
     tool: Optional[str] = Field(
         None, description="Tool that produced this finding: 'bandit', 'ruff', 'llm', 'ast'"
     )
@@ -140,6 +143,7 @@ class PRReviewJob(BaseModel):
     base_sha: str
     pr_title: str
     pr_url: str
+    pr_author: str = Field(default="unknown", description="GitHub login of the PR author")
     diff: str = Field(..., description="Full unified diff of the PR")
     changed_files: list[str] = Field(
         default_factory=list, description="List of changed file paths"
