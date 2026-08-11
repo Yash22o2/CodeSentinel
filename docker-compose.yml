@@ -6,11 +6,8 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+asyncpg://codesentinel:codesentinel@postgres:5432/codesentinel
     depends_on:
       redis:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
     volumes:
       - ./app:/app/app  # hot reload in dev
@@ -25,22 +22,3 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: codesentinel
-      POSTGRES_PASSWORD: codesentinel
-      POSTGRES_DB: codesentinel
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U codesentinel"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-volumes:
-  postgres_data:

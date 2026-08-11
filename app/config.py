@@ -35,9 +35,6 @@ class Settings(BaseSettings):
     # ── Redis ─────────────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
 
-    # ── Postgres ──────────────────────────────────────────────────────────────
-    database_url: str = "postgresql+asyncpg://codesentinel:codesentinel@localhost:5432/codesentinel"
-
     # ── Rate Limiting ─────────────────────────────────────────────────────────
     webhook_rate_limit: str = "100/minute"
 
