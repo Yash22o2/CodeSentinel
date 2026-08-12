@@ -10,7 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.webhook import router as webhook_router
+from app.api.metrics import router as metrics_router
 from app.config import get_settings
+from app.db.session import create_db_and_tables
 
 # ── Structlog setup ───────────────────────────────────────────────────────────
 structlog.configure(
@@ -43,6 +45,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     log = structlog.get_logger(__name__)
     log.info("CodeSentinel starting", env=settings.app_env, model=settings.groq_model)
+    create_db_and_tables()
     yield
     log.info("CodeSentinel shutting down")
 
@@ -69,3 +72,4 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(health_router)
 app.include_router(webhook_router)
+app.include_router(metrics_router)

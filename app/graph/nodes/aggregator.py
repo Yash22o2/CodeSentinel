@@ -49,6 +49,42 @@ def aggregator_node(state: GraphState) -> dict:
     )
 
     elapsed = (time.monotonic() - t0) * 1000
+    
+    # Save to SQLite analytics DB
+    from app.db.models import ReviewMetric
+    from app.db.session import engine
+    from sqlmodel import Session
+
+    try:
+        # Calculate per-agent kept findings
+        agent_counts = {"security": 0, "style": 0, "logic": 0, "test": 0}
+        for f in filtered:
+            rule_id = (f.rule_id or "").lower()
+            if "security" in rule_id:
+                agent_counts["security"] += 1
+            elif "style" in rule_id:
+                agent_counts["style"] += 1
+            elif "test" in rule_id:
+                agent_counts["test"] += 1
+            else:
+                agent_counts["logic"] += 1
+        
+        with Session(engine) as db_session:
+            metric = ReviewMetric(
+                pr_id=f"{state['repo_full_name']}#{state['pr_number']}",
+                total_latency_ms=int(total_latency),
+                total_tokens=len(plan.agents_to_run) * 2000,
+                estimated_cost_usd=estimated_cost,
+                security_findings_kept=agent_counts["security"],
+                style_findings_kept=agent_counts["style"],
+                logic_findings_kept=agent_counts["logic"],
+                test_findings_kept=agent_counts["test"],
+            )
+            db_session.add(metric)
+            db_session.commit()
+    except Exception as e:
+        log.error("aggregator.db_save_failed", error=str(e))
+
     log.info(
         "aggregator.done",
         findings=len(filtered),

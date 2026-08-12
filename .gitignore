@@ -51,3 +51,7 @@ Thumbs.db
 
 # ChromaDB
 .chroma_data/
+
+# Markdown files
+*.md
+!README.md

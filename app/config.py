@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_env: Literal["development", "production"] = "development"
     log_level: str = "INFO"
     secret_key: str = "change_me_in_production"
+    metrics_api_key: str = "change_me_in_production"
 
     # ── Groq / LLM ───────────────────────────────────────────────────────────
     groq_api_key: str = Field(..., description="Groq API key")
@@ -39,8 +40,8 @@ class Settings(BaseSettings):
     webhook_rate_limit: str = "100/minute"
 
     # ── Review Thresholds ─────────────────────────────────────────────────────
-    critic_confidence_threshold: float = 0.6
-    max_findings_per_review: int = 50
+    critic_confidence_threshold: float = 0.4
+    max_findings_per_review: int = 20
 
     # ── Phase 3: Timeout Budgets (seconds) ───────────────────────────────────
     # Per-agent timeout: each specialist agent gets this long to call Groq
