@@ -182,6 +182,35 @@ async def _run_review(job: PRReviewJob) -> None:
         metadata=metadata,
     )
 
+    # ── 7. Save to Database ───────────────────────────────────────────────────
+    try:
+        from sqlmodel import Session
+        from app.db.session import engine
+        from app.db.models import ReviewMetric
+
+        security = sum(1 for f in filtered if f.category.value == "security")
+        style = sum(1 for f in filtered if f.category.value == "style")
+        logic = sum(1 for f in filtered if f.category.value == "logic")
+        test = sum(1 for f in filtered if f.category.value == "test_coverage")
+
+        with Session(engine) as session:
+            metric = ReviewMetric(
+                pr_id=f"{job.repo_full_name}#{job.pr_number}",
+                total_latency_ms=int(metadata.total_latency_ms),
+                total_tokens=metadata.total_tokens,
+                estimated_cost_usd=metadata.estimated_cost_usd,
+                security_findings_kept=security,
+                style_findings_kept=style,
+                logic_findings_kept=logic,
+                test_findings_kept=test,
+                created_at=datetime.utcnow()
+            )
+            session.add(metric)
+            session.commit()
+            log.info("Review metrics saved to dashboard DB")
+    except Exception as e:
+        log.error("Failed to save review metrics", error=str(e))
+
     log.info("Review complete", latency_ms=round(elapsed_ms, 1))
 
 

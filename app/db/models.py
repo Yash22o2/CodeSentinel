@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from sqlmodel import SQLModel, Field
 
@@ -7,6 +8,7 @@ class ReviewMetric(SQLModel, table=True):
     total_latency_ms: int
     total_tokens: int
     estimated_cost_usd: float
+    created_at: datetime = Field(default_factory=datetime.utcnow)
     
     # Track effectiveness per agent
     security_findings_kept: int = 0

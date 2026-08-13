@@ -1,98 +1,232 @@
 # 🛡️ CodeSentinel
 
-> An asynchronous, fault-tolerant multi-agent code review system built with LangGraph, FastAPI, Redis/RQ, and ChromaDB.
+**CodeSentinel is an autonomous AI code review bot that plugs directly into GitHub.** Open a Pull Request, and within seconds, multiple AI agents have already read the diff, hunted for bugs, security holes, and style problems, and posted a structured review comment — all without you lifting a finger.
 
-CodeSentinel connects to GitHub via webhooks to automatically review Pull Requests. Instead of dumping raw diffs into a single prompt, it fans out the code diff to **parallel specialist agents** (Security, Style, Logic, Test Coverage), filters out false alarms using **vector memory**, and posts structured inline review comments back to GitHub.
+No dashboards to check, no commands to run. The bot does the work.
 
 ---
 
-## 📐 System Architecture
+## How It Works (The 30-Second Version)
 
-```text
-                           ┌───────────────────────────┐
-                           │    GitHub Webhook Event   │
-                           └─────────────┬─────────────┘
-                                         │ POST /webhook/github (<1ms)
-                                         ▼
-                           ┌───────────────────────────┐
-                           │      FastAPI Router       │
-                           └─────────────┬─────────────┘
-                                         │ Enqueue Job
-                                         ▼
-                           ┌───────────────────────────┐
-                           │     Redis Job Queue       │
-                           └─────────────┬─────────────┘
-                                         │ Poll Task
-                                         ▼
-                           ┌───────────────────────────┐
-                           │     RQ Worker Process     │
-                           └─────────────┬─────────────┘
-                                         │ Run Graph
-                                         ▼
-                           ┌───────────────────────────┐
-                           │   LangGraph Workflow      │
-                           └─────────────┬─────────────┘
-                                         │
-      ┌──────────────────┬───────────────┴───────────────┬──────────────────┬──────────────────┐
-      ▼                  ▼                               ▼                  ▼                  ▼
-┌───────────┐      ┌───────────┐                   ┌───────────┐      ┌───────────┐      ┌─────────────────┐
-│ Security  │      │   Style   │                   │   Logic   │      │   Test    │      │   Reliability   │
-│  Agent    │      │   Agent   │                   │   Agent   │      │   Agent   │      │ (Timeouts/Fuses)│
-└─────┬─────┘      └─────┬─────┘                   └─────┬─────┘      └─────┬─────┘      └─────────────────┘
-      │                  │                               │                  │
-      └──────────────────┴───────────────┬───────────────┴──────────────────┘
-                                         │ Raw Findings
-                                         ▼
-                           ┌───────────────────────────┐
-                           │        Critic Node        │ ◄─── Auto-Drop ─── ┌─────────────────┐
-                           └─────────────┬─────────────┘ (Distance <= 0.05) │ ChromaDB Memory │
-                                         │ Filtered Findings                └─────────────────┘
-                                         ▼
-                           ┌───────────────────────────┐
-                           │      Aggregator Node      │
-                           └─────────────┬─────────────┘
-                                         │ Post Review Comment
-                                         ▼
-                           ┌───────────────────────────┐
-                           │    GitHub Pull Request    │
-                           └───────────────────────────┘
+1. A developer opens a Pull Request on GitHub.
+2. GitHub fires a webhook to CodeSentinel's server (takes less than 1ms to acknowledge).
+3. A background worker picks up the job and sends the code diff to **four specialist AI agents running in parallel**: Security, Style, Logic, and Test Coverage.
+4. A Critic AI filters out false alarms by comparing new findings against a memory of past false positives (stored in a local vector database).
+5. The bot posts a clean, formatted review comment directly on the Pull Request with a severity breakdown table.
+6. All review metrics (cost, latency, findings count) are saved to a **Visual Analytics Dashboard** at `/dashboard`.
+
+---
+
+## Demo
+
+> 🎬 *GIF recording coming soon — will show a PR being opened and the bot commenting in real-time.*
+
+**Live Demo:** Open the dashboard at `/dashboard` and use the interactive "Try It" panel to run the agents on a custom code snippet without needing a real PR.
+
+---
+
+## Architecture
+
+```
+GitHub PR Opened
+      │
+      ▼  POST /webhook/github  (returns 202 in <1ms)
+ ┌──────────────┐
+ │  FastAPI     │  ← HMAC-SHA256 signature verified here
+ └──────┬───────┘
+        │  enqueue job
+        ▼
+ ┌──────────────┐
+ │  Redis Queue │  ← Job sits here safely even if server restarts
+ └──────┬───────┘
+        │  poll
+        ▼
+ ┌──────────────┐
+ │  RQ Worker   │  ← Separate process, no timeout risk
+ └──────┬───────┘
+        │  invoke graph
+        ▼
+ ┌─────────────────────────────────────────────────┐
+ │            LangGraph StateGraph                 │
+ │                                                 │
+ │  planner ──→ [parallel fan-out]                 │
+ │                ├── security_agent               │
+ │                ├── style_agent                  │
+ │                ├── logic_agent                  │
+ │                └── test_agent                   │
+ │                          │                      │
+ │              [fan-in] critic ◄── ChromaDB Memory│
+ │                          │                      │
+ │                     aggregator                  │
+ └──────────────────────┬──────────────────────────┘
+                        │
+                        ▼
+              GitHub PR Review Comment
+              + Dashboard DB update
 ```
 
-## ⚙️ Core Engineering Design
+---
 
-### 1. Decoupled Webhook Ingestion (`FastAPI` + `Redis/RQ`)
-Running multi-agent LLM pipelines directly inside a Webhook request thread leads to timeouts and process memory spikes. 
-* **Producer:** FastAPI validates the GitHub HMAC signature, enqueues the review job into **Redis**, and returns an immediate `200 OK` (`<1ms` latency).
-* **Consumer:** An independent background **RQ Worker** polls Redis and executes the heavy multi-agent workflow without blocking the web server.
+## Key Engineering Decisions
 
-### 2. Parallel Multi-Agent Fan-out (`LangGraph`)
-Reviewing large diffs in a single prompt dilutes model focus. CodeSentinel routes diff chunks in parallel across four dedicated agents:
-* **Security Agent:** Scans for injection vulnerabilities, secret leaks, and insecure data handling.
-* **Style Agent:** Checks for formatting, dead code, and naming consistency.
-* **Logic Agent:** Inspects control flow, edge cases, and off-by-one errors.
-* **Test Agent:** Identifies missing assertion paths or untested functions.
+### 1. Webhook Returns Immediately
+Running AI agents inside a webhook request thread would cause GitHub to retry the delivery after 10 seconds (and eventually disable the webhook). CodeSentinel returns `HTTP 202 Accepted` in under 1ms. The heavy AI work happens in a completely separate background worker process.
 
-### 3. Reliability & Fault Tolerance Layer
-* **Per-Node Timeouts:** Wraps agent execution in `asyncio.wait_for`. If a specialist stalls, it yields empty findings and gracefully degrades without breaking the pipeline.
-* **Circuit Breakers:** Uses an in-memory breaker per agent (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF-OPEN`). If an agent fails 3 consecutive times, it is bypassed for 60 seconds.
+### 2. Parallel Agent Fan-Out
+Instead of sending the entire diff to a single "do everything" prompt (which gives vague, unfocused output), CodeSentinel splits the review across specialists. All four agents run at the same time, cutting total latency significantly.
 
-### 4. False-Positive Suppression Memory (`ChromaDB`)
-To prevent the Critic node from re-evaluating recurring false alarms across PRs:
-* **Composite Context Embeddings:** Stores dropped findings as `Rule ID + Code Snippet + Issue Message`.
-* **Local ONNX Embeddings:** Uses Chroma's lightweight `all-MiniLM-L6-v2` model locally via ONNX Runtime (zero extra API cost).
-* **Repository Isolation:** Queries use metadata filters (`where={"repo": repo, "decision": "drop"}`) to isolate memories per project.
-* **Vector Match Thresholding:** Uses Cosine Distance ($\le 0.05$, corresponding to $\ge 0.95$ Cosine Similarity) to auto-drop known false positives before hitting the LLM.
+### 3. False-Positive Memory (ChromaDB)
+Every finding the Critic decides to drop is stored as a vector embedding. On the next PR review in the same repo, if a new finding is semantically very similar (cosine distance ≤ 0.05) to a past false positive, it is dropped automatically before the LLM even sees it. This gets smarter over time.
+
+### 4. Fault Tolerance at Every Layer
+- **Circuit Breakers:** If any agent fails 3 times in a row, it is bypassed for 60 seconds so one broken agent cannot block the entire review.
+- **Per-Node Timeouts:** If an agent stalls, it yields empty findings and the pipeline continues.
+- **Graph Deadline:** A total 120-second wall-clock deadline is shared across all nodes so the whole review can never hang indefinitely.
+- **Redis Fallback:** If Redis is unavailable (e.g., during local dev without Docker), the webhook falls back to FastAPI's native `BackgroundTasks` automatically — so the system works with or without Redis.
 
 ---
 
-## 🧰 Tech Stack
+## Tech Stack
 
-| Domain | Technology |
+| Layer | Technology |
 | :--- | :--- |
-| **Frameworks** | Python 3.11, FastAPI, Pydantic v2 |
-| **Orchestration** | LangGraph (`StateGraph`), LangChain |
-| **Task Queue** | Redis, RQ (Redis Queue) |
-| **Vector Store** | ChromaDB (Local Persistent Mode + ONNX Runtime) |
-| **Inference API** | Groq (`llama-3.3-70b-versatile`) |
-| **Integrations** | PyGithub, HTTPX, GitHub Webhooks (HMAC SHA-256) |
-| **Testing** | Pytest, Pytest-Asyncio, Tenacity |
+| Web Framework | Python 3.11, FastAPI, Pydantic v2 |
+| AI Orchestration | LangGraph (`StateGraph`), LangChain |
+| LLM Provider | Groq (`llama-3.3-70b-versatile`) |
+| Task Queue | Redis, RQ (Redis Queue) |
+| Vector Memory | ChromaDB (Local Persistent + ONNX Runtime embeddings) |
+| GitHub Integration | HTTPX, PyGithub, HMAC-SHA256 webhook verification |
+| Analytics DB | SQLite via SQLModel |
+| Frontend Dashboard | FastAPI + Jinja2, Vanilla CSS (Glassmorphism / Dark Bento UI) |
+| Testing | Pytest, Pytest-Asyncio, Tenacity |
+
+---
+
+## Project Structure
+
+```
+CodeSentinel/
+├── app/
+│   ├── api/
+│   │   ├── webhook.py       # Receives GitHub events, enqueues jobs
+│   │   ├── dashboard.py     # Serves the analytics UI + metrics API
+│   │   └── health.py        # Health check endpoint
+│   ├── graph/
+│   │   ├── builder.py       # Assembles the LangGraph StateGraph
+│   │   ├── state.py         # Typed state shared across all nodes
+│   │   └── nodes/
+│   │       ├── base_agent.py    # Shared LLM + retry + circuit breaker logic
+│   │       ├── planner.py       # Decides which agents to run per PR
+│   │       ├── security_agent.py
+│   │       ├── style_agent.py
+│   │       ├── logic_agent.py
+│   │       ├── test_agent.py
+│   │       ├── critic.py        # Deduplicates + filters findings via ChromaDB
+│   │       └── aggregator.py    # Formats + posts the GitHub review comment
+│   ├── github/
+│   │   ├── client.py            # GitHub API wrapper (fetch diffs, post comments)
+│   │   ├── diff_parser.py       # Parses raw .diff text into structured objects
+│   │   ├── comment_poster.py    # Formats and posts the Markdown review
+│   │   └── webhook_validator.py # HMAC-SHA256 signature verification
+│   ├── reliability/
+│   │   ├── circuit_breaker.py   # Per-agent CLOSED/OPEN/HALF-OPEN state machine
+│   │   └── job_store.py         # In-memory job status tracker
+│   ├── memory/
+│   │   └── chroma_store.py      # ChromaDB vector store for false-positive memory
+│   ├── db/
+│   │   ├── models.py            # SQLModel ReviewMetric table schema
+│   │   └── session.py           # SQLite engine + session factory
+│   ├── worker/
+│   │   ├── processor.py         # Runs the full review pipeline end-to-end
+│   │   └── rq_worker.py         # RQ entry point (sync wrapper for async code)
+│   ├── templates/
+│   │   └── dashboard.html       # Jinja2 template for the analytics dashboard
+│   ├── static/
+│   │   ├── css/style.css        # Dark glassmorphism UI styles
+│   │   └── js/dashboard.js      # Chart.js charts + live SSE streaming
+│   ├── config.py                # Pydantic settings (reads from .env)
+│   ├── schemas.py               # Shared Pydantic models (Finding, PRReviewJob, etc.)
+│   └── main.py                  # FastAPI app factory + router registration
+├── tests/                       # Pytest test suite (8 test files, ~60 tests)
+├── scripts/                     # Utility scripts (e.g., DB seeder)
+├── docker-compose.yml           # Redis service for local development
+├── Dockerfile                   # Production container definition
+├── pyproject.toml               # Dependencies (uv / pip)
+└── .env.example                 # Environment variable template
+```
+
+---
+
+## Quick Start (Local Development)
+
+### Prerequisites
+- Python 3.11+
+- Docker Desktop (for Redis)
+- A Groq API key (free at [console.groq.com](https://console.groq.com))
+- A GitHub repo with a configured webhook pointing to your ngrok URL
+
+### 1. Clone and Install
+```bash
+git clone https://github.com/Yash22o2/CodeSentinel.git
+cd CodeSentinel
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+pip install -e ".[dev]"
+```
+
+### 2. Configure Environment
+```bash
+cp .env.example .env
+# Fill in your GROQ_API_KEY, GITHUB_TOKEN, and GITHUB_WEBHOOK_SECRET
+```
+
+### 3. Start Redis
+```bash
+docker-compose up -d redis
+```
+
+### 4. Run the Server
+```bash
+uvicorn app.main:app --reload
+```
+
+### 5. Run the Background Worker (new terminal)
+```bash
+# Windows (SimpleWorker avoids the os.fork() issue):
+.venv\Scripts\rq worker codesentinel --worker-class rq.SimpleWorker
+```
+
+### 6. Expose Locally via Ngrok
+```bash
+ngrok http 8000
+# Copy the https URL and set it as your GitHub webhook URL: https://xxx.ngrok.io/webhook/github
+```
+
+### 7. Open the Dashboard
+Navigate to `http://localhost:8000/dashboard`
+
+---
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+| :--- | :--- |
+| `GROQ_API_KEY` | Your Groq API key |
+| `GITHUB_TOKEN` | GitHub Personal Access Token (to post review comments) |
+| `GITHUB_WEBHOOK_SECRET` | Secret set in your GitHub webhook settings |
+| `REDIS_URL` | Redis connection URL (default: `redis://localhost:6379`) |
+| `ENV` | `development` or `production` |
+
+---
+
+## License
+
+MIT

@@ -2,9 +2,6 @@
 .env
 .env.local
 
-# Session context (local only, never push)
-CONTEXT.md
-
 # Python
 __pycache__/
 *.py[cod]
@@ -37,9 +34,11 @@ htmlcov/
 # Docker
 *.dockerignore
 
-# Database
+# Database & SQLite WAL files
 *.db
 *.sqlite3
+*.db-shm
+*.db-wal
 
 # Logs
 *.log
@@ -49,9 +48,9 @@ logs/
 .DS_Store
 Thumbs.db
 
-# ChromaDB
+# ChromaDB local data
 .chroma_data/
 
-# Markdown files
+# Local working notes & session files (never push these)
 *.md
 !README.md

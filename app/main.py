@@ -8,9 +8,12 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi.staticfiles import StaticFiles
+
 from app.api.health import router as health_router
 from app.api.webhook import router as webhook_router
 from app.api.metrics import router as metrics_router
+from app.api.dashboard import router as dashboard_router
 from app.config import get_settings
 from app.db.session import create_db_and_tables
 
@@ -69,7 +72,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(health_router)
 app.include_router(webhook_router)
 app.include_router(metrics_router)
+app.include_router(dashboard_router)

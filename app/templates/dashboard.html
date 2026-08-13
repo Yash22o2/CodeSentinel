@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CodeSentinel - Visual Analytics Dashboard</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="header bento-card glass">
+            <div class="logo-area">
+                <div class="logo-icon-wrapper">
+                    <div class="logo-icon">
+                        <div class="logo-front">CS</div>
+                        <div class="logo-back">🤖</div>
+                    </div>
+                </div>
+                <h1 class="logo-text">CodeSentinel</h1>
+            </div>
+            <div class="system-status">
+                <span class="status-indicator"></span>
+                <span class="status-text">System Operational - Redis/RQ Active</span>
+            </div>
+        </header>
+
+        <!-- Hero Bento Grid -->
+        <div class="bento-grid top-metrics">
+            <div class="bento-card glass metric-card">
+                <h3 class="metric-title">Total PRs Reviewed</h3>
+                <p class="metric-value" id="metric-prs">--</p>
+                <div class="glow-accent cyan"></div>
+            </div>
+            <div class="bento-card glass metric-card">
+                <h3 class="metric-title">Total Tokens Used</h3>
+                <p class="metric-value" id="metric-tokens">--</p>
+                <div class="glow-accent purple"></div>
+            </div>
+            <div class="bento-card glass metric-card">
+                <h3 class="metric-title">Estimated Cost</h3>
+                <p class="metric-value" id="metric-cost">--</p>
+                <div class="glow-accent cyan"></div>
+            </div>
+            <div class="bento-card glass metric-card">
+                <h3 class="metric-title">Avg Latency</h3>
+                <p class="metric-value" id="metric-latency">--</p>
+                <div class="glow-accent purple"></div>
+            </div>
+        </div>
+
+        <!-- Charts Section -->
+        <div class="bento-grid charts-grid">
+            <div class="bento-card glass chart-container">
+                <h3 class="chart-title">Activity (Last 30 Days)</h3>
+                <div class="chart-wrapper">
+                    <canvas id="activityChart"></canvas>
+                </div>
+            </div>
+            <div class="bento-card glass chart-container">
+                <h3 class="chart-title">Findings by Agent</h3>
+                <div class="doughnut-wrapper">
+                    <canvas id="findingsChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Interactive Live Demo Section -->
+        <div class="bento-card glass demo-section">
+            <h2 class="demo-title">Interactive Live Demo</h2>
+            <p class="demo-subtitle">Experience the multi-agent CodeSentinel architecture in real-time.</p>
+            
+            <div class="demo-grid">
+                <div class="demo-input">
+                    <div class="editor-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="editor-title">example.py</span>
+                    </div>
+                    <textarea id="demo-code" class="code-editor" spellcheck="false">
+def calculate_total(prices):
+    # Inefficient list comprehension
+    taxed = [p * 1.2 for p in prices]
+    # Hardcoded secret
+    api_key = "sk_live_1234567890abcdef"
+    
+    total = 0
+    for t in taxed:
+        total = total + t
+        
+    return total
+                    </textarea>
+                    <button id="btn-run-demo" class="btn-primary">
+                        <span class="btn-text">Run AI Review</span>
+                        <div class="btn-glow"></div>
+                    </button>
+                </div>
+
+                <div class="demo-output">
+                    <div class="output-header">
+                        <span class="output-title">Live Execution Stream</span>
+                        <span id="demo-status" class="status-badge idle">Idle</span>
+                    </div>
+                    <div id="sse-stream" class="sse-console">
+                        <!-- SSE events will stream here -->
+                        <div class="console-line system">Waiting for submission...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom JS -->
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
