@@ -23,11 +23,18 @@ class Settings(BaseSettings):
     secret_key: str = "change_me_in_production"
     metrics_api_key: str = "change_me_in_production"
 
-    # ── Groq / LLM ───────────────────────────────────────────────────────────
-    groq_api_key: str = Field(..., description="Groq API key")
-    groq_model: str = "llama-3.3-70b-versatile"
-    groq_max_tokens: int = 4096
-    groq_temperature: float = 0.1
+    # ── Groq (kept for backwards-compat but not used as primary provider) ──────
+    groq_api_key: str = Field(default="", description="Groq API key (optional if using OpenRouter)")
+    groq_model: str = "qwen/qwen-2.5-coder-32b-instruct"
+
+    # ── LLM Provider (OpenRouter or any OpenAI-compatible endpoint) ───────────
+    # Set LLM_API_KEY to your OpenRouter key (sk-or-v1-...)  
+    # Leave LLM_BASE_URL as default for OpenRouter.
+    llm_api_key: str = Field(..., description="API key for the LLM provider (OpenRouter recommended)")
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_model: str = "qwen/qwen-2.5-coder-32b-instruct:free"
+    llm_max_tokens: int = 4096
+    llm_temperature: float = 0.1
 
     # ── GitHub ───────────────────────────────────────────────────────────────
     github_token: str = Field(..., description="GitHub PAT with PR write + contents read")
@@ -67,7 +74,7 @@ class Settings(BaseSettings):
     langchain_api_key: str = ""
     langchain_project: str = "codesentinel"
 
-    @field_validator("groq_api_key", "github_token", "github_webhook_secret", mode="before")
+    @field_validator("llm_api_key", "github_token", "github_webhook_secret", mode="before")
     @classmethod
     def must_not_be_empty(cls, v: str, info) -> str:  # noqa: N805
         placeholder_prefixes = ("your_", "change_me", "<", "")

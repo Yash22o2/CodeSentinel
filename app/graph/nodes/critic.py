@@ -20,7 +20,7 @@ import re
 import time
 
 import structlog
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
@@ -30,13 +30,27 @@ from app.schemas import Finding, Severity
 
 log = structlog.get_logger(__name__)
 
-_settings = get_settings()
-_llm = ChatGroq(
-    model=_settings.groq_model,
-    api_key=_settings.groq_api_key,
-    temperature=0.0,   # Critic must be deterministic
-    max_tokens=2048,
-)
+# ── LLM client — built lazily so .env changes take effect without restarting worker ──
+_llm_cache: ChatOpenAI | None = None
+_llm_cache_model: str = ""
+
+def _get_llm() -> ChatOpenAI:
+    global _llm_cache, _llm_cache_model
+    s = get_settings()
+    if _llm_cache is None or _llm_cache_model != s.llm_model:
+        _llm_cache = ChatOpenAI(
+            model=s.llm_model,
+            api_key=s.llm_api_key,
+            base_url=s.llm_base_url,
+            temperature=0.0,   # Critic must be deterministic
+            max_tokens=2048,
+            default_headers={
+                "HTTP-Referer": "https://github.com/Yash22o2/CodeSentinel",
+                "X-Title": "CodeSentinel",
+            },
+        )
+        _llm_cache_model = s.llm_model
+    return _llm_cache
 
 # Findings with confidence below this are sent to the LLM for re-evaluation
 CONFIDENCE_THRESHOLD = 0.55
@@ -107,7 +121,7 @@ def _llm_filter(repo: str, findings: list[Finding]) -> list[Finding]:
         indent=2,
     )
 
-    response = _llm.invoke(
+    response = _get_llm().invoke(
         [
             {"role": "system", "content": _CRITIC_PROMPT},
             {"role": "user", "content": f"Evaluate these findings:\n\n{findings_json}"},
@@ -123,7 +137,7 @@ def _llm_filter(repo: str, findings: list[Finding]) -> list[Finding]:
             return findings  # If we can't parse, keep all (fail safe)
         decisions = json.loads(match.group())
 
-    keep_ids = {d["id"] for d in decisions if d.get("decision") == "keep"}
+    keep_ids = {d["id"] for d in decisions if str(d.get("decision", "")).strip().lower() == "keep"}
     # If parsing fails for a finding, default to keep
     if not keep_ids and len(decisions) == 0:
         return findings
@@ -189,7 +203,7 @@ def critic_node(state: GraphState) -> dict:
 
     # ── 5. LLM filter on borderline findings ────────────────────────────────────
     # Phase 3: wrap in deadline-aware timeout
-    critic_timeout = _settings.critic_timeout_s
+    critic_timeout = get_settings().critic_timeout_s
     graph_deadline: float | None = state.get("graph_deadline")
     if graph_deadline is not None:
         remaining = graph_deadline - time.monotonic()

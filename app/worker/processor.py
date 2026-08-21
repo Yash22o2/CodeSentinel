@@ -156,6 +156,19 @@ async def _run_review(job: PRReviewJob) -> None:
         agents=plan.agents_to_run if plan else [],
         elapsed_ms=round(elapsed_ms, 1),
     )
+    
+    # DEBUG: Dump findings to a file
+    try:
+        import json
+        with open("debug_findings.json", "w") as f:
+            debug_data = {
+                "all_findings": [finding.dict() for finding in final_state.get("all_findings", [])],
+                "filtered_findings": [finding.dict() for finding in filtered],
+                "errors": errors,
+            }
+            json.dump(debug_data, f, indent=2, default=str)
+    except Exception as e:
+        log.error("Failed to dump debug_findings", error=str(e))
 
     # ── 5. Build metadata ─────────────────────────────────────────────────────
     metadata = ReviewMetadata(
@@ -211,6 +224,11 @@ async def _run_review(job: PRReviewJob) -> None:
     except Exception as e:
         log.error("Failed to save review metrics", error=str(e))
 
+    finally:
+        try:
+            await github.close()
+        except Exception:
+            pass
     log.info("Review complete", latency_ms=round(elapsed_ms, 1))
 
 

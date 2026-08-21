@@ -208,7 +208,6 @@ class GitHubClient:
         await self._http_client.aclose()
 
 
-@lru_cache
 def get_github_client() -> GitHubClient:
-    """Cached GitHub client singleton."""
+    """GitHub client factory."""
     return GitHubClient()

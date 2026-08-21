@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency spec and install
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -e .
 
@@ -36,6 +36,9 @@ COPY app/ ./app/
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
+
+# Give the non-root user ownership of /app so it can write analytics.db and .chroma_data
+RUN mkdir -p /app/.chroma_data && chown -R sentinel:sentinel /app
 
 USER sentinel
 

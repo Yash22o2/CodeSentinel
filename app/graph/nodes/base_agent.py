@@ -7,7 +7,7 @@ Each agent subclasses BaseAgent and only overrides:
   - finding_type   — the Severity/category tag
 
 The base handles:
-  - Groq API call (via langchain-groq)
+  - LLM API call (via langchain-openai → OpenRouter or any OpenAI-compatible endpoint)
   - Tenacity retries (3x with exp backoff)
   - Structured output parsing (Finding list)
   - Timing instrumentation
@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import structlog
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -38,14 +38,30 @@ from app.schemas import Finding, Severity
 
 log = structlog.get_logger(__name__)
 
-# ── Shared Groq client (one per process, reused across all agents) ────────────
-_settings = get_settings()
-_llm = ChatGroq(
-    model=_settings.groq_model,
-    api_key=_settings.groq_api_key,
-    temperature=_settings.groq_temperature,
-    max_tokens=_settings.groq_max_tokens,
-)
+# ── LLM client — built lazily so .env changes take effect without restarting worker ──
+_llm_cache: ChatOpenAI | None = None
+_llm_cache_model: str = ""
+
+
+def _get_llm() -> ChatOpenAI:
+    """Return a cached ChatOpenAI client, rebuilding it if the model has changed."""
+    global _llm_cache, _llm_cache_model
+    s = get_settings()
+    if _llm_cache is None or _llm_cache_model != s.llm_model:
+        _llm_cache = ChatOpenAI(
+            model=s.llm_model,
+            api_key=s.llm_api_key,
+            base_url=s.llm_base_url,
+            temperature=s.llm_temperature,
+            max_tokens=s.llm_max_tokens,
+            default_headers={
+                "HTTP-Referer": "https://github.com/Yash22o2/CodeSentinel",
+                "X-Title": "CodeSentinel",
+            },
+        )
+        _llm_cache_model = s.llm_model
+        log.info("LLM client initialised", model=s.llm_model, base_url=s.llm_base_url)
+    return _llm_cache
 
 
 def _build_diff_context(diff_files: list[DiffChunk], max_chars: int = 12_000) -> str:
@@ -67,12 +83,12 @@ def _build_diff_context(diff_files: list[DiffChunk], max_chars: int = 12_000) ->
 _FINDING_SCHEMA = """
 Return a JSON array of findings. Each finding must be:
 {
-  "filename": "<file path>",
-  "line_number": <integer or null>,
+  "file": "<file path>",
+  "line": <integer or null>,
   "severity": "<critical|high|medium|low|info>",
-  "title": "<short one-line title>",
-  "description": "<detailed explanation, 1-3 sentences>",
-  "suggestion": "<concrete fix or improvement>",
+  "category": "<security|style|test_coverage|logic>",
+  "message": "<detailed explanation, 1-3 sentences>",
+  "suggested_fix": "<concrete fix or improvement>",
   "confidence": <float 0.0-1.0>
 }
 
@@ -119,8 +135,8 @@ class BaseAgent(ABC):
         # ── Phase 3: Circuit breaker ────────────────────────────────────────────────────
         cb = get_breaker(
             self.agent_name,
-            failure_threshold=_settings.cb_failure_threshold,
-            recovery_timeout=_settings.cb_recovery_timeout_s,
+            failure_threshold=get_settings().cb_failure_threshold,
+            recovery_timeout=get_settings().cb_recovery_timeout_s,
         )
 
         try:
@@ -168,7 +184,7 @@ class BaseAgent(ABC):
         Uses asyncio.wait_for if an event loop is running; otherwise falls back
         to a direct call (sync context in RQ worker).
         """
-        timeout = _settings.agent_timeout_s
+        timeout = get_settings().agent_timeout_s
 
         # Honour graph deadline: don't wait longer than remaining time
         if graph_deadline is not None:
@@ -216,7 +232,7 @@ class BaseAgent(ABC):
     ) -> list[Finding]:
         diff_context = _build_diff_context(diff_files)
         prompt = self._build_prompt(diff_context, repo, pr)
-        response = _llm.invoke(
+        response = _get_llm().invoke(
             [
                 {"role": "system", "content": self.SYSTEM_PROMPT + "\n\n" + _FINDING_SCHEMA},
                 {"role": "user", "content": prompt},
@@ -233,6 +249,9 @@ class BaseAgent(ABC):
         self, raw: str, diff_files: list[DiffChunk]
     ) -> list[Finding]:
         """Parse LLM JSON output into Finding objects, tolerating partial failures."""
+        # Strip <think>...</think> blocks emitted by reasoning models (e.g. Qwen)
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
         # Strip markdown code fences if present
         raw = re.sub(r"```(?:json)?\s*", "", raw).strip()
         if raw.endswith("```"):
